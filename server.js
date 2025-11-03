@@ -1,99 +1,57 @@
 // server.js
-// Demo server: Express + Socket.IO
-// npm i express socket.io cors body-parser uuid
+import express from "express";
+import http from "http";
+import { Server } from "socket.io";
+import path from "path";
+import { fileURLToPath } from "url";
 
-const express = require('express');
-const http = require('http');
-const cors = require('cors');
-const bodyParser = require('body-parser');
-const { Server } = require('socket.io');
-const { v4: uuidv4 } = require('uuid');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
-app.use(cors());
-app.use(bodyParser.json());
-
 const server = http.createServer(app);
-const io = new Server(server, {
-  cors: { origin: '*' }
+const io = new Server(server);
+
+const users = new Map(); // username -> socket.id
+const chats = new Map(); // ключ 'a|b' -> массив сообщений
+
+app.use(express.static(path.join(__dirname, "public")));
+
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-// In-memory stores (demo). Use Postgres/Mongo in prod.
-const users = {}; // tag -> { tag, pubKey, socketId, createdAt }
-const messages = {}; // convId -> [ { id, from, to, ciphertext, iv, ts } ]
+io.on("connection", (socket) => {
+  console.log("🟢 User connected:", socket.id);
 
-// Helper: conversation id by tags (deterministic)
-function convId(a, b) {
-  return [a, b].sort().join('::');
-}
-
-// Register user public key
-app.post('/api/register', (req, res) => {
-  const { tag, pubKey } = req.body;
-  if (!tag || !pubKey) return res.status(400).json({ error: 'tag and pubKey required' });
-  if (users[tag]) return res.status(409).json({ error: 'tag_taken' });
-  users[tag] = { tag, pubKey, socketId: null, createdAt: new Date().toISOString() };
-  console.log('Registered', tag);
-  return res.json({ ok: true });
-});
-
-// Get user public key by tag
-app.get('/api/users/:tag', (req, res) => {
-  const tag = req.params.tag;
-  const u = users[tag];
-  if (!u) return res.status(404).json({ error: 'not_found' });
-  return res.json({ tag: u.tag, pubKey: u.pubKey, createdAt: u.createdAt });
-});
-
-// Get simple list (demo)
-app.get('/api/users', (req, res) => {
-  return res.json(Object.values(users).map(u => ({ tag: u.tag, createdAt: u.createdAt })));
-});
-
-// socket.io
-io.on('connection', (socket) => {
-  console.log('ws connect', socket.id);
-
-  socket.on('register_socket', ({ tag }) => {
-    if (users[tag]) {
-      users[tag].socketId = socket.id;
-      console.log('Socket registered for', tag);
-    } else {
-      // Optionally auto-register minimal user (no pubKey) - demo
-      users[tag] = { tag, pubKey: null, socketId: socket.id, createdAt: new Date().toISOString() };
-      console.log('Auto-created user for socket', tag);
-    }
+  socket.on("register", (username) => {
+    users.set(username, socket.id);
+    socket.data.username = username;
+    console.log(`✅ ${username} вошёл`);
+    io.emit("users", Array.from(users.keys()));
   });
 
-  socket.on('send_message', (payload, cb) => {
-    // payload: { from, to, ciphertext, iv, ts, messageId }
-    const { from, to, ciphertext, iv, ts, messageId } = payload;
-    if (!from || !to || !ciphertext || !iv) {
-      if (cb) cb({ ok: false, error: 'invalid' });
-      return;
+  socket.on("sendMessage", ({ from, to, text }) => {
+    const chatKey = [from, to].sort().join("|");
+    if (!chats.has(chatKey)) chats.set(chatKey, []);
+    const message = { from, to, text, time: new Date() };
+    chats.get(chatKey).push(message);
+
+    const receiverSocket = users.get(to);
+    if (receiverSocket) {
+      io.to(receiverSocket).emit("message", message);
     }
-    const id = messageId || uuidv4();
-    const cId = convId(from, to);
-    messages[cId] = messages[cId] || [];
-    const msg = { id, from, to, ciphertext, iv, ts: ts || new Date().toISOString() };
-    messages[cId].push(msg);
-    // try deliver
-    const recipient = users[to];
-    if (recipient && recipient.socketId) {
-      io.to(recipient.socketId).emit('message', { chatId: cId, ...msg });
-    }
-    // ack to sender
-    if (cb) cb({ ok: true, messageId: id });
+    socket.emit("message", message);
   });
 
-  socket.on('disconnect', () => {
-    // cleanup socketId mapping
-    for (const t in users) {
-      if (users[t].socketId === socket.id) users[t].socketId = null;
+  socket.on("disconnect", () => {
+    if (socket.data.username) {
+      users.delete(socket.data.username);
+      io.emit("users", Array.from(users.keys()));
+      console.log(`🔴 ${socket.data.username} отключился`);
     }
-    console.log('ws disconnect', socket.id);
   });
 });
 
-const port = process.env.PORT || 3001;
-server.listen(port, () => console.log('Server listening on', port));
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, () => console.log(`🚀 Server started on port ${PORT}`));

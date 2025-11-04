@@ -1,21 +1,14 @@
+// db.js
 import pg from "pg";
-import dotenv from "dotenv";
-dotenv.config();
-
 const { Pool } = pg;
 
+const connectionString = process.env.DATABASE_URL || 'postgres://postgres:password@localhost:5432/svoychat';
+
 export const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
+  connectionString,
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-await pool.query(`
-  CREATE TABLE IF NOT EXISTS users (
-    id SERIAL PRIMARY KEY,
-    username VARCHAR(64) UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    pub_key TEXT NOT NULL,
-    priv_key_enc TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT NOW()
-  );
-`);
+pool.connect()
+  .then(() => console.log('[DB] Connected to PostgreSQL'))
+  .catch(err => console.error('[DB] Connection error:', err));
